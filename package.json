@@ -1,0 +1,15 @@
+{
+  "name": "pjsekai-plurk-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "定期截圖 score_predict.html 並發送到噗浪",
+  "scripts": {
+    "get-token": "node scripts/get-access-token.js",
+    "post": "node scripts/post-to-plurk.js"
+  },
+  "dependencies": {
+    "oauth-1.0a": "^2.2.6",
+    "playwright": "^1.47.0"
+  }
+}

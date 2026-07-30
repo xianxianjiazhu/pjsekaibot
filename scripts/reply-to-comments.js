@@ -2,6 +2,11 @@
  * 輪詢「最近發出去的排行預測噗」底下有沒有新留言，
  * 比對是否以 "pjsk" 開頭的查詢指令，符合的話自動回覆。
  *
+ * 限定機器人好友才能使用：每次回覆前會即時向 Plurk API 查詢留言者
+ * 是不是機器人的好友，查完就丟棄，不會把留言者的帳號 ID 存進任何地方
+ * （追蹤用的 plurk_tracked / plurk_replied 兩個 Sheet 只存「噗」和「留言」
+ * 本身的 ID，不含留言者身份資料）。
+ *
  * 支援的指令格式（"pjsk" 後面接空白）：
  *   pjsk T100      → 查里程碑名次（限固定里程碑，例如 T10/20/.../100/200/500/1000...）
  *   pjsk 123456789 → 查玩家 ID 目前名次（僅限目前在前100名內的玩家）
@@ -61,7 +66,8 @@ async function plurkGet(path, params = {}) {
 
 async function plurkPost(path, params = {}) {
   const url = `https://www.plurk.com${path}`;
-  const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST" }, token));
+  // application/x-www-form-urlencoded 格式的請求，body 欄位必須一起參與簽名計算
+  const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST", data: params }, token));
   const form = new URLSearchParams(params);
   const res = await fetch(url, {
     method: "POST",
@@ -71,6 +77,43 @@ async function plurkPost(path, params = {}) {
   const text = await res.text();
   if (!res.ok) throw new Error(`Plurk POST ${path} 失敗（HTTP ${res.status}）：${text}`);
   return JSON.parse(text);
+}
+
+// ---- 好友檢查：只在單次執行期間查詢並暫存於記憶體，執行結束就丟棄，不落地存檔 ----
+let cachedBotUserId = null;
+let cachedFriendIdSet = null;
+
+async function getBotUserId() {
+  if (cachedBotUserId) return cachedBotUserId;
+  const me = await plurkGet("/APP/Users/me");
+  cachedBotUserId = me.id;
+  return cachedBotUserId;
+}
+
+async function loadFriendIdSet() {
+  if (cachedFriendIdSet) return cachedFriendIdSet;
+  const botUserId = await getBotUserId();
+  const idSet = new Set();
+  let offset = null;
+
+  // 分頁抓好友清單，抓到回傳筆數小於一頁的量就代表抓完了
+  for (let page = 0; page < 20; page++) {
+    const params = { user_id: botUserId };
+    if (offset) params.offset = offset;
+    const friends = await plurkGet("/APP/FriendsFans/getFriendsByOffset", params);
+    if (!Array.isArray(friends) || !friends.length) break;
+    friends.forEach((f) => idSet.add(String(f.id)));
+    if (friends.length < 30) break; // 這一頁沒滿，代表是最後一頁
+    offset = friends[friends.length - 1].id;
+  }
+
+  cachedFriendIdSet = idSet;
+  return idSet;
+}
+
+async function isFriend(userId) {
+  const friendIdSet = await loadFriendIdSet();
+  return friendIdSet.has(String(userId));
 }
 
 async function appsScript(params) {
@@ -161,6 +204,22 @@ async function main() {
       if (!command) continue; // 不是 pjsk 開頭，不理會
 
       console.log(`收到指令：plurk_id=${plurkId} response_id=${responseId} content="${response.content_raw}"`);
+
+      const commenterUserId = response.user_id;
+      let friend = false;
+      try {
+        friend = commenterUserId ? await isFriend(commenterUserId) : false;
+      } catch (err) {
+        console.warn(`⚠️ 查詢好友狀態失敗，保守當作非好友：${err.message}`);
+      }
+
+      if (!friend) {
+        console.log(`留言者非好友，不予理會：response_id=${responseId}`);
+        // 標記已處理，避免每次排程重複檢查同一則非好友留言
+        await appsScript({ mode: "markReplied", plurkId, responseId });
+        repliedSet.add(responseId);
+        continue;
+      }
 
       let replyText;
       try {

@@ -153,14 +153,15 @@ async function postToPlurk(imageBuffer, content) {
   console.log("圖片網址：", imageUrl);
 
   const url = "https://www.plurk.com/APP/Timeline/plurkAdd";
-  const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST" }, token));
-
   // 把圖片網址接在文字後面，噗浪會自動把純網址渲染成圖片
   const contentWithImage = `${content}\n${imageUrl}`;
+  const bodyParams = { qualifier: PLURK_QUALIFIER, content: contentWithImage };
 
-  const form = new URLSearchParams();
-  form.append("qualifier", PLURK_QUALIFIER);
-  form.append("content", contentWithImage);
+  // application/x-www-form-urlencoded 格式的請求，body 欄位必須一起參與簽名計算
+  // （跟之前 multipart/form-data 夾帶圖片檔案時不同，那種格式不需要簽 body 欄位）
+  const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST", data: bodyParams }, token));
+
+  const form = new URLSearchParams(bodyParams);
 
   const res = await fetch(url, {
     method: "POST",

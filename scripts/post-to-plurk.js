@@ -1,7 +1,9 @@
 /**
  * 開啟 score_predict.html，點擊「📷 生成分享圖片」按鈕，
  * 攔截網站本身產生的下載檔案（generateShareImage() → downloadCanvas()），
- * 直接拿這張圖發送到噗浪，不用另外截圖裁切。
+ * 先用 /APP/Timeline/uploadPicture 把圖片上傳到噗浪拿到圖片網址，
+ * 再把網址接在文字後面一起發噗（噗浪會自動把純網址渲染成圖片；
+ * 這個帳號/App 權限不支援在 plurkAdd 裡直接夾帶圖片檔案，所以不能一步到位）。
  *
  * 需要的環境變數（放進 GitHub Secrets）：
  *   PLURK_APP_KEY / PLURK_APP_SECRET / PLURK_ACCESS_TOKEN / PLURK_ACCESS_SECRET
@@ -113,16 +115,14 @@ function getOAuthClient() {
   });
 }
 
-async function postToPlurk(imageBuffer, content) {
+async function uploadPicture(imageBuffer) {
   const oauth = getOAuthClient();
   const token = { key: PLURK_ACCESS_TOKEN, secret: PLURK_ACCESS_SECRET };
-  const url = "https://www.plurk.com/APP/Timeline/plurkAdd";
+  const url = "https://www.plurk.com/APP/Timeline/uploadPicture";
 
   const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST" }, token));
 
   const form = new FormData();
-  form.append("qualifier", PLURK_QUALIFIER);
-  form.append("content", content);
   form.append("image", new Blob([imageBuffer], { type: "image/png" }), "prediction.png");
 
   const res = await fetch(url, {
@@ -133,11 +133,44 @@ async function postToPlurk(imageBuffer, content) {
 
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(
-      `發噗失敗（HTTP ${res.status}）：${text}\n` +
-      `如果錯誤跟 image 參數有關，代表這個帳號/App 權限不支援在 plurkAdd 直接夾帶圖片，\n` +
-      `需要改成先呼叫 /APP/Timeline/uploadPicture 取得圖片網址，再把網址放進 content 文字裡。`
-    );
+    throw new Error(`上傳圖片失敗（HTTP ${res.status}）：${text}`);
+  }
+
+  const parsed = JSON.parse(text);
+  const imageUrl = parsed.full || parsed.thumbnail;
+  if (!imageUrl) {
+    throw new Error(`上傳圖片成功但回應裡沒有圖片網址：${text}`);
+  }
+  return imageUrl;
+}
+
+async function postToPlurk(imageBuffer, content) {
+  const oauth = getOAuthClient();
+  const token = { key: PLURK_ACCESS_TOKEN, secret: PLURK_ACCESS_SECRET };
+
+  console.log("正在上傳圖片...");
+  const imageUrl = await uploadPicture(imageBuffer);
+  console.log("圖片網址：", imageUrl);
+
+  const url = "https://www.plurk.com/APP/Timeline/plurkAdd";
+  const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST" }, token));
+
+  // 把圖片網址接在文字後面，噗浪會自動把純網址渲染成圖片
+  const contentWithImage = `${content}\n${imageUrl}`;
+
+  const form = new URLSearchParams();
+  form.append("qualifier", PLURK_QUALIFIER);
+  form.append("content", contentWithImage);
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { ...authHeader, "Content-Type": "application/x-www-form-urlencoded" },
+    body: form,
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`發噗失敗（HTTP ${res.status}）：${text}`);
   }
   console.log("✅ 發噗成功：", text);
 

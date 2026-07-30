@@ -73,7 +73,6 @@ jobs:
           TARGET_URL: "https://xianxianjiazhu.github.io/pjsekai/score_predict.html"
           SHARE_BUTTON_SELECTOR: "#shareImageBtn"
           APPS_SCRIPT_BASE_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec"
-          PLURK_CONTENT: "本場活動排行預測（自動發送）"
         run: node scripts/post-to-plurk.js
 
       - name: 上傳截圖供除錯（可選）

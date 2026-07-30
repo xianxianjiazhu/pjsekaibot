@@ -18,7 +18,7 @@ jobs:
         env:
           STATUS_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=proxy&target=top100"
         run: |
-          RESPONSE=$(curl -s "$STATUS_URL")
+          RESPONSE=$(curl -sL "$STATUS_URL")
           echo "回傳內容（節錄）：$(echo "$RESPONSE" | head -c 300)"
 
           START_AT=$(echo "$RESPONSE" | jq -r '.start_at // empty')

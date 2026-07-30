@@ -10,7 +10,9 @@
  *   TARGET_URL       - score_predict.html 的網址
  *   SHARE_BUTTON_SELECTOR - 「生成分享圖片」按鈕的選擇器，預設 "#shareImageBtn"
  *   PLURK_QUALIFIER  - 發噗的語氣詞，預設 "分享"
- *   PLURK_CONTENT    - 發噗的文字內容
+ *   APPS_SCRIPT_BASE_URL - 你的 Apps Script /exec 網址，用來動態查活動名稱+距結算時間
+ *   PLURK_CONTENT    - 手動指定發噗文字（留空的話會自動組出動態文字，
+ *                       格式：#世界計畫 #台服 #預測分數線 + 活動名稱 + 距結算時間）
  */
 import crypto from "crypto";
 import fs from "fs";
@@ -26,7 +28,7 @@ const {
   TARGET_URL = "https://xianxianjiazhu.github.io/pjsekai/score_predict.html",
   SHARE_BUTTON_SELECTOR = "#shareImageBtn",
   PLURK_QUALIFIER = "shares",
-  PLURK_CONTENT = "本場活動排行預測（自動發送）",
+  PLURK_CONTENT = "",
   APPS_SCRIPT_BASE_URL = "",
 } = process.env;
 
@@ -62,6 +64,44 @@ async function fetchShareImage() {
   return fs.readFileSync(downloadPath);
 }
 
+async function fetchEventStatus() {
+  if (!APPS_SCRIPT_BASE_URL) return null;
+  try {
+    const url = `${APPS_SCRIPT_BASE_URL}?mode=proxy&target=top100`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const top = await res.json();
+    if (!top || !top.name) return null;
+
+    let hoursRemaining = null;
+    if (top.aggregate_at) {
+      hoursRemaining = (new Date(top.aggregate_at) - new Date()) / 3600000;
+    }
+
+    return { name: top.name, hoursRemaining };
+  } catch (err) {
+    console.warn("⚠️ 抓取活動狀態失敗，改用預設發噗文字：", err.message);
+    return null;
+  }
+}
+
+function buildPlurkContent(eventStatus) {
+  // 如果有手動指定 PLURK_CONTENT，優先用手動指定的（保留手動覆寫的彈性）
+  if (PLURK_CONTENT) return PLURK_CONTENT;
+
+  const hashtags = "#世界計畫 #台服 #預測分數線";
+
+  if (!eventStatus) {
+    return `${hashtags}\n本場活動排行預測（自動發送）`;
+  }
+
+  const remainText = eventStatus.hoursRemaining !== null && eventStatus.hoursRemaining > 0
+    ? `，距結算約 ${Math.round(eventStatus.hoursRemaining * 10) / 10} 小時`
+    : "";
+
+  return `${hashtags}\n【${eventStatus.name}】排行預測${remainText}`;
+}
+
 function getOAuthClient() {
   return OAuth({
     consumer: { key: PLURK_APP_KEY, secret: PLURK_APP_SECRET },
@@ -72,7 +112,7 @@ function getOAuthClient() {
   });
 }
 
-async function postToPlurk(imageBuffer) {
+async function postToPlurk(imageBuffer, content) {
   const oauth = getOAuthClient();
   const token = { key: PLURK_ACCESS_TOKEN, secret: PLURK_ACCESS_SECRET };
   const url = "https://www.plurk.com/APP/Timeline/plurkAdd";
@@ -81,7 +121,7 @@ async function postToPlurk(imageBuffer) {
 
   const form = new FormData();
   form.append("qualifier", PLURK_QUALIFIER);
-  form.append("content", PLURK_CONTENT);
+  form.append("content", content);
   form.append("image", new Blob([imageBuffer], { type: "image/png" }), "prediction.png");
 
   const res = await fetch(url, {
@@ -134,8 +174,13 @@ async function main() {
   // 存一份在 Actions 的 log 裡，方便除錯（例如確認抓到的是不是空白圖）
   fs.writeFileSync("prediction-preview.png", imageBuffer);
 
+  console.log("正在查詢活動狀態，組發噗文字...");
+  const eventStatus = await fetchEventStatus();
+  const content = buildPlurkContent(eventStatus);
+  console.log("發噗內容：\n" + content);
+
   console.log("正在發送到噗浪...");
-  const plurkId = await postToPlurk(imageBuffer);
+  const plurkId = await postToPlurk(imageBuffer, content);
   await trackPlurk(plurkId);
 }
 

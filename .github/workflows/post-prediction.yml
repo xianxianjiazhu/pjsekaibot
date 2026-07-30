@@ -23,7 +23,13 @@ jobs:
         env:
           STATUS_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=proxy&target=top100"
         run: |
-          RESPONSE=$(curl -sL "$STATUS_URL")
+          RESPONSE=$(curl -sL --max-time 30 "$STATUS_URL")
+          CURL_EXIT=$?
+          if [[ $CURL_EXIT -ne 0 ]]; then
+            echo "curl 逾時或失敗（exit code $CURL_EXIT），可能是 Apps Script 或 HiSekai API 沒回應，這次跳過"
+            echo "in_range=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "回傳內容（節錄）：$(echo "$RESPONSE" | head -c 300)"
 
           START_AT=$(echo "$RESPONSE" | jq -r '.start_at // empty')
@@ -38,13 +44,19 @@ jobs:
           NOW_EPOCH=$(date -u +%s)
           START_EPOCH=$(date -u -d "$START_AT" +%s)
           AGGREGATE_EPOCH=$(date -u -d "$AGGREGATE_AT" +%s)
+          # 活動開始滿3小時才開始發文，避免開場資料還沒穩定就發出去
+          MIN_START_EPOCH=$((START_EPOCH + 3 * 3600))
 
           echo "現在（UTC）：$(date -u -d "@$NOW_EPOCH")"
           echo "活動開始：$(date -u -d "@$START_EPOCH")，預測截止（結算時間）：$(date -u -d "@$AGGREGATE_EPOCH")"
+          echo "開始發文門檻（活動開始+3小時）：$(date -u -d "@$MIN_START_EPOCH")"
 
-          if [[ "$NOW_EPOCH" -ge "$START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
-            echo "在活動預測期間內，繼續發文"
+          if [[ "$NOW_EPOCH" -ge "$MIN_START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
+            echo "在活動預測期間內（已過開場3小時緩衝），繼續發文"
             echo "in_range=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$NOW_EPOCH" -ge "$START_EPOCH" && "$NOW_EPOCH" -lt "$MIN_START_EPOCH" ]]; then
+            echo "活動剛開始不到3小時，開場資料還不穩定，先跳過"
+            echo "in_range=false" >> "$GITHUB_OUTPUT"
           else
             echo "不在活動預測期間內（尚未開始或已結算），跳過這次發文"
             echo "in_range=false" >> "$GITHUB_OUTPUT"

@@ -44,12 +44,13 @@ async function fetchShareImage() {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 
-  await page.goto(TARGET_URL, { waitUntil: "networkidle" });
+  await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForSelector(SHARE_BUTTON_SELECTOR, { timeout: 30000 });
 
-  // 排行資料是打 API 後才渲染的，保守多等幾秒，避免按下去時資料還沒到位、
-  // 生成出一張空白或不完整的分享圖。
-  await page.waitForTimeout(4000);
+  // 排行資料是打 API 後才渲染的，且不再靠 networkidle 間接等待資料抓完，
+  // 保守多等幾秒，避免按下去時資料還沒到位、生成出一張空白或不完整的分享圖。
+  // 如果 Artifacts 裡下載到的圖常常是空的或資料不完整，把這個數字調更大。
+  await page.waitForTimeout(8000);
 
   // 同時等「下載事件」跟「點擊按鈕」，順序才不會漏接下載
   const [download] = await Promise.all([

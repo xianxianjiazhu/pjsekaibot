@@ -46,13 +46,26 @@ async function fetchShareImage() {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 
+  // 「同角色歷史中位數」是網站另外打一次 mode=character_stats API 才會算出來的，
+  // 跟頁面主要即時資料是分開的非同步流程，耗時會隨資料量浮動，
+  // 所以不用猜固定秒數，改成直接等這個 API 真的回應完成。
+  // 監聽要在 goto 之前就設好，避免請求太快完成而錯過。
+  const charStatsResponsePromise = page
+    .waitForResponse((res) => res.url().includes("mode=character_stats"), { timeout: 30000 })
+    .catch(() => null); // 30秒內沒等到（例如活動類型本來就不會打這隻API、或API異常）就放棄等待，改用備援緩衝時間
+
   await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForSelector(SHARE_BUTTON_SELECTOR, { timeout: 30000 });
 
-  // 排行資料是打 API 後才渲染的，且不再靠 networkidle 間接等待資料抓完，
-  // 保守多等幾秒，避免按下去時資料還沒到位、生成出一張空白或不完整的分享圖。
-  // 如果 Artifacts 裡下載到的圖常常是空的或資料不完整，把這個數字調更大。
-  await page.waitForTimeout(8000);
+  const charStatsResponse = await charStatsResponsePromise;
+  if (charStatsResponse) {
+    console.log("已確認歷史中位數資料載入完成（收到 mode=character_stats 回應）");
+  } else {
+    console.log("沒有等到 mode=character_stats 回應（可能不是一般活動、或逾時），改用備援緩衝時間");
+  }
+
+  // 不管有沒有等到，都再留一點緩衝時間讓表格重新渲染完成（buildRankTable 重繪本身很快，這是保險）
+  await page.waitForTimeout(2000);
 
   // 同時等「下載事件」跟「點擊按鈕」，順序才不會漏接下載
   const [download] = await Promise.all([

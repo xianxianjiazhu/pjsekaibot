@@ -2,9 +2,11 @@ name: 發送排行預測到噗浪
 
 on:
   schedule:
-    # cron 是 UTC 時間，台灣時間 = UTC + 8
-    # UTC 0:00~16:00 每小時一次 = 台灣時間 08:00 ~ 隔天 00:00 每小時一次
-    - cron: "0 0-16 * * *"
+    # UTC 0:00~16:00 每30分鐘檢查一次 = 台灣時間 08:00 ~ 隔天 00:00
+    # GitHub Actions 排程不保證準時，甚至可能整點直接被跳過，
+    # 拉高檢查密度是為了提高「至少每小時範圍內有補到一次」的機率，
+    # check-date 的活動期間判斷邏輯不變，不會因此變成每30分鐘都真的發文
+    - cron: "*/30 0-16 * * *"
   workflow_dispatch:
     inputs:
       force_run:
@@ -52,8 +54,21 @@ jobs:
           echo "開始發文門檻（活動開始+3小時）：$(date -u -d "@$MIN_START_EPOCH")"
 
           if [[ "$NOW_EPOCH" -ge "$MIN_START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
-            echo "在活動預測期間內（已過開場3小時緩衝），繼續發文"
-            echo "in_range=true" >> "$GITHUB_OUTPUT"
+            echo "在活動預測期間內（已過開場3小時緩衝），檢查最近有沒有剛發過文..."
+
+            # 因為排程改成每30分鐘檢查一次，同一小時內可能觸發兩次，
+            # 這裡查「最近45分鐘內」有沒有已經發過文，避免重複發文
+            RECENT_URL="https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=trackedPlurks&hours=0.75"
+            RECENT_RESPONSE=$(curl -sL --max-time 30 "$RECENT_URL")
+            RECENT_COUNT=$(echo "$RECENT_RESPONSE" | jq -r '.plurkIds | length // 0' 2>/dev/null || echo "0")
+
+            if [[ "$RECENT_COUNT" -gt 0 ]]; then
+              echo "最近45分鐘內已經發過文了（$RECENT_COUNT 則），這次跳過避免重複發文"
+              echo "in_range=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "最近45分鐘內沒發過文，繼續發文"
+              echo "in_range=true" >> "$GITHUB_OUTPUT"
+            fi
           elif [[ "$NOW_EPOCH" -ge "$START_EPOCH" && "$NOW_EPOCH" -lt "$MIN_START_EPOCH" ]]; then
             echo "活動剛開始不到3小時，開場資料還不穩定，先跳過"
             echo "in_range=false" >> "$GITHUB_OUTPUT"

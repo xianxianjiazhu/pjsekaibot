@@ -50,8 +50,17 @@ async function fetchShareImage() {
   // 跟頁面主要即時資料是分開的非同步流程，耗時會隨資料量浮動，
   // 所以不用猜固定秒數，改成直接等這個 API 真的回應完成。
   // 監聽要在 goto 之前就設好，避免請求太快完成而錯過。
+  //
+  // 注意：Apps Script 的 /exec 網址一定會先回傳 302 轉址到 googleusercontent.com/macros/echo?...
+  // 這個 echo 網址本身不含 "mode=character_stats" 字樣，所以不能只比對網址字串，
+  // 不然只會抓到「轉址那一瞬間」，抓不到「轉址後真正帶著資料的最終回應」。
+  // 改成用 redirectedFrom() 追蹤：這個回應的請求是不是「從一個 character_stats 請求轉址過來的」。
   const charStatsResponsePromise = page
-    .waitForResponse((res) => res.url().includes("mode=character_stats"), { timeout: 30000 })
+    .waitForResponse((res) => {
+      if (res.url().includes("mode=character_stats")) return true; // 沒被轉址的情況（保險用）
+      const redirectedFrom = res.request().redirectedFrom();
+      return Boolean(redirectedFrom && redirectedFrom.url().includes("mode=character_stats"));
+    }, { timeout: 30000 })
     .catch(() => null); // 30秒內沒等到（例如活動類型本來就不會打這隻API、或API異常）就放棄等待，改用備援緩衝時間
 
   await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
@@ -80,25 +89,51 @@ async function fetchShareImage() {
   return fs.readFileSync(downloadPath);
 }
 
-async function fetchEventStatus() {
-  if (!APPS_SCRIPT_BASE_URL) return null;
-  try {
-    const url = `${APPS_SCRIPT_BASE_URL}?mode=proxy&target=top100`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const top = await res.json();
-    if (!top || !top.name) return null;
-
-    let hoursRemaining = null;
-    if (top.aggregate_at) {
-      hoursRemaining = (new Date(top.aggregate_at) - new Date()) / 3600000;
-    }
-
-    return { id: top.id, name: top.name, hoursRemaining };
-  } catch (err) {
-    console.warn("⚠️ 抓取活動狀態失敗，改用預設發噗文字：", err.message);
+async function fetchEventStatusOnce() {
+  const url = `${APPS_SCRIPT_BASE_URL}?mode=proxy&target=top100`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.warn(`⚠️ 查詢活動狀態失敗（HTTP ${res.status}）`);
     return null;
   }
+  const top = await res.json();
+  if (!top || !top.name) {
+    console.warn(
+      `⚠️ 查詢活動狀態沒有拿到活動名稱。回傳內容：${JSON.stringify(top).slice(0, 200)}`
+    );
+    return null;
+  }
+
+  let hoursRemaining = null;
+  if (top.aggregate_at) {
+    hoursRemaining = (new Date(top.aggregate_at) - new Date()) / 3600000;
+  }
+
+  return { id: top.id, name: top.name, hoursRemaining };
+}
+
+async function fetchEventStatus() {
+  if (!APPS_SCRIPT_BASE_URL) return null;
+
+  const MAX_ATTEMPTS = 2;
+  const RETRY_DELAY_MS = 3000;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const result = await fetchEventStatusOnce();
+      if (result) return result;
+    } catch (err) {
+      console.warn(`⚠️ 抓取活動狀態失敗（第 ${attempt} 次）：${err.message}`);
+    }
+
+    if (attempt < MAX_ATTEMPTS) {
+      console.log(`3 秒後重試查詢活動狀態（第 ${attempt + 1}/${MAX_ATTEMPTS} 次）...`);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+  }
+
+  console.warn("⚠️ 重試後仍抓不到活動狀態，改用預設發噗文字");
+  return null;
 }
 
 function buildPlurkContent(eventStatus) {

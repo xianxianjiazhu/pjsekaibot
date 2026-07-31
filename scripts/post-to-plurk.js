@@ -42,6 +42,50 @@ function assertEnv() {
   }
 }
 
+// 等 mode=character_stats 真正回應完成（追蹤 302 轉址鏈，見下方說明）
+// 注意：這裡故意不是 async function，只負責「設好監聽器、立刻回傳 promise」，
+// 呼叫的人自己決定什麼時候要 await，不然如果這裡用 async+await，
+// 呼叫當下就會卡住等待，來不及先做 page.goto()。
+function waitForCharacterStats(page) {
+  return page
+    .waitForResponse((res) => {
+      if (res.url().includes("mode=character_stats")) return true; // 沒被轉址的情況（保險用）
+      const redirectedFrom = res.request().redirectedFrom();
+      return Boolean(redirectedFrom && redirectedFrom.url().includes("mode=character_stats"));
+    }, { timeout: 30000 })
+    .catch(() => null);
+}
+
+// 常見里程碑裡，T5000 以下正常來說活動進行中一定會有人達到，
+// 這個範圍內如果出現「無官方資料」，代表 border API 抓取異常，值得重新整理重試；
+// T10000 以上（尤其 T50000、T100000）本來就常常沒人打到，是正常現象，不算異常。
+const RELIABLE_BORDER_THRESHOLD = 5000;
+
+// 直接讀表格每一列的內容，抓出哪些名次目前顯示「無官方資料」
+async function getMissingBorderRanks(page) {
+  return page
+    .evaluate(() => {
+      const rows = Array.from(document.querySelectorAll("#rankTableBody tr"));
+      const missing = [];
+      for (const tr of rows) {
+        const rankCell = tr.querySelector(".rank-tag");
+        if (!rankCell) continue;
+        const rank = parseInt(rankCell.textContent.replace("T", ""), 10);
+        if (Number.isNaN(rank)) continue;
+        if ((tr.textContent || "").includes("無官方資料")) missing.push(rank);
+      }
+      return missing;
+    })
+    .catch(() => []);
+}
+
+// 判斷是不是「不正常的缺漏」：只要 T200~T5000 這個常見範圍內有任何一個顯示無官方資料，
+// 就代表 border API 這次抓取異常，值得重新整理重試；高名次（T10000以上）缺漏是正常現象，不算。
+async function isBorderDataMissing(page) {
+  const missingRanks = await getMissingBorderRanks(page);
+  return missingRanks.some((rank) => rank > 100 && rank <= RELIABLE_BORDER_THRESHOLD);
+}
+
 async function fetchShareImage() {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -55,13 +99,7 @@ async function fetchShareImage() {
   // 這個 echo 網址本身不含 "mode=character_stats" 字樣，所以不能只比對網址字串，
   // 不然只會抓到「轉址那一瞬間」，抓不到「轉址後真正帶著資料的最終回應」。
   // 改成用 redirectedFrom() 追蹤：這個回應的請求是不是「從一個 character_stats 請求轉址過來的」。
-  const charStatsResponsePromise = page
-    .waitForResponse((res) => {
-      if (res.url().includes("mode=character_stats")) return true; // 沒被轉址的情況（保險用）
-      const redirectedFrom = res.request().redirectedFrom();
-      return Boolean(redirectedFrom && redirectedFrom.url().includes("mode=character_stats"));
-    }, { timeout: 30000 })
-    .catch(() => null); // 30秒內沒等到（例如活動類型本來就不會打這隻API、或API異常）就放棄等待，改用備援緩衝時間
+  let charStatsResponsePromise = waitForCharacterStats(page);
 
   await page.goto(TARGET_URL, { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForSelector(SHARE_BUTTON_SELECTOR, { timeout: 30000 });
@@ -75,6 +113,34 @@ async function fetchShareImage() {
 
   // 不管有沒有等到，都再留一點緩衝時間讓表格重新渲染完成（buildRankTable 重繪本身很快，這是保險）
   await page.waitForTimeout(2000);
+
+  // 網站抓 border（T200以上）資料的 tryFetchBorder() 只有一次機會、5秒逾時、沒有重試，
+  // 如果剛好那次 API 回應慢，常見名次（T5000以下）就會顯示「無官方資料」。
+  // 這裡偵測到「常見名次缺漏」才重新整理頁面重試（高名次沒人達到的正常缺漏不算，不會誤觸發）。
+  const MAX_RELOADS = 2;
+  for (let attempt = 1; attempt <= MAX_RELOADS; attempt++) {
+    const missingRanks = await getMissingBorderRanks(page);
+    const abnormalMissing = missingRanks.filter((rank) => rank > 100 && rank <= RELIABLE_BORDER_THRESHOLD);
+    if (!abnormalMissing.length) break;
+
+    console.log(
+      `⚠️ 偵測到常見名次缺漏（T${abnormalMissing.join("、T")}），研判是 border API 抓取異常，重新整理頁面重試（第 ${attempt}/${MAX_RELOADS} 次）...`
+    );
+    charStatsResponsePromise = waitForCharacterStats(page);
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForSelector(SHARE_BUTTON_SELECTOR, { timeout: 30000 });
+    await charStatsResponsePromise;
+    await page.waitForTimeout(2000);
+
+    if (attempt === MAX_RELOADS) {
+      const stillMissing = await isBorderDataMissing(page);
+      if (stillMissing) {
+        console.warn("⚠️ 重新整理後 border 資料仍整批抓取失敗，這次先照現況送出，不再繼續重試");
+      } else {
+        console.log("✅ 重新整理後 border 資料已補齊");
+      }
+    }
+  }
 
   // 同時等「下載事件」跟「點擊按鈕」，順序才不會漏接下載
   const [download] = await Promise.all([

@@ -2,11 +2,11 @@ name: 發送排行預測到噗浪
 
 on:
   schedule:
-    # UTC 0:00~16:00 每30分鐘檢查一次 = 台灣時間 08:00 ~ 隔天 00:00
-    # GitHub Actions 排程不保證準時，甚至可能整點直接被跳過，
-    # 拉高檢查密度是為了提高「至少每小時範圍內有補到一次」的機率，
-    # check-date 的活動期間判斷邏輯不變，不會因此變成每30分鐘都真的發文
-    - cron: "*/30 0-16 * * *"
+    # UTC 0:00~16:00 每小時一次 = 台灣時間 08:00 ~ 隔天 00:00
+    # 現在主力是 Cloudflare Workers 準時觸發 workflow_dispatch，
+    # 這裡只當備援（萬一 Cloudflare 那次沒觸發成功），
+    # 密度不用拉太高，避免跟 Cloudflare 的觸發疊在一起、把55分鐘防重複窗口撐爆
+    - cron: "0 0-16 * * *"
   workflow_dispatch:
     inputs:
       force_run:
@@ -56,17 +56,18 @@ jobs:
           if [[ "$NOW_EPOCH" -ge "$MIN_START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
             echo "在活動預測期間內（已過開場3小時緩衝），檢查最近有沒有剛發過文..."
 
-            # 因為排程改成每30分鐘檢查一次，同一小時內可能觸發兩次，
-            # 這裡查「最近45分鐘內」有沒有已經發過文，避免重複發文
-            RECENT_URL="https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=trackedPlurks&hours=0.75"
+            # 因為 GitHub 自己的 schedule 跟 Cloudflare 準時觸發可能疊在一起，
+            # 這裡查「最近55分鐘內」有沒有已經發過文，避免重複發文
+            # （留5分鐘餘裕給下一輪整點，不會卡到下次該發的時機）
+            RECENT_URL="https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=trackedPlurks&hours=0.92"
             RECENT_RESPONSE=$(curl -sL --max-time 30 "$RECENT_URL")
             RECENT_COUNT=$(echo "$RECENT_RESPONSE" | jq -r '.plurkIds | length // 0' 2>/dev/null || echo "0")
 
             if [[ "$RECENT_COUNT" -gt 0 ]]; then
-              echo "最近45分鐘內已經發過文了（$RECENT_COUNT 則），這次跳過避免重複發文"
+              echo "最近55分鐘內已經發過文了（$RECENT_COUNT 則），這次跳過避免重複發文"
               echo "in_range=false" >> "$GITHUB_OUTPUT"
             else
-              echo "最近45分鐘內沒發過文，繼續發文"
+              echo "最近55分鐘內沒發過文，繼續發文"
               echo "in_range=true" >> "$GITHUB_OUTPUT"
             fi
           elif [[ "$NOW_EPOCH" -ge "$START_EPOCH" && "$NOW_EPOCH" -lt "$MIN_START_EPOCH" ]]; then

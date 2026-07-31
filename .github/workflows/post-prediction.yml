@@ -49,11 +49,27 @@ jobs:
           # 活動開始滿3小時才開始發文，避免開場資料還沒穩定就發出去
           MIN_START_EPOCH=$((START_EPOCH + 3 * 3600))
 
+          # 獨立檢查現在的台灣時間是不是在 08:00~24:00 之間，不管是哪個排程來源、
+          # 延遲多久才觸發都要守住這道防線（之前發生過 GitHub 排程延遲，
+          # 導致原本該 00:00 觸發的排程拖到凌晨1點才真的執行、照樣發文的狀況）。
+          # 有效時段是台灣時間 8~23 點，加上代表「24:00」那個時刻的 0 點整（每天最後一次）。
+          TW_HOUR=$(TZ="Asia/Taipei" date -d "@$NOW_EPOCH" +%-H)
+          TW_TIME_STR=$(TZ="Asia/Taipei" date -d "@$NOW_EPOCH" "+%Y-%m-%d %H:%M:%S")
+          if [[ "$TW_HOUR" -ge 8 || "$TW_HOUR" -eq 0 ]]; then
+            IN_ACTIVE_HOURS=true
+          else
+            IN_ACTIVE_HOURS=false
+          fi
+          echo "現在台灣時間：$TW_TIME_STR，是否在發文時段(08:00~24:00)內：$IN_ACTIVE_HOURS"
+
           echo "現在（UTC）：$(date -u -d "@$NOW_EPOCH")"
           echo "活動開始：$(date -u -d "@$START_EPOCH")，預測截止（結算時間）：$(date -u -d "@$AGGREGATE_EPOCH")"
           echo "開始發文門檻（活動開始+3小時）：$(date -u -d "@$MIN_START_EPOCH")"
 
-          if [[ "$NOW_EPOCH" -ge "$MIN_START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
+          if [[ "$IN_ACTIVE_HOURS" != "true" ]]; then
+            echo "現在不在台灣時間 08:00~24:00 的發文時段內，跳過這次發文"
+            echo "in_range=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$NOW_EPOCH" -ge "$MIN_START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
             echo "在活動預測期間內（已過開場3小時緩衝），檢查最近有沒有剛發過文..."
 
             # 因為 GitHub 自己的 schedule 跟 Cloudflare 準時觸發可能疊在一起，

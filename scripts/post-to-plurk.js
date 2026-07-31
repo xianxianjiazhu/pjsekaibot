@@ -94,7 +94,7 @@ async function fetchEventStatus() {
       hoursRemaining = (new Date(top.aggregate_at) - new Date()) / 3600000;
     }
 
-    return { name: top.name, hoursRemaining };
+    return { id: top.id, name: top.name, hoursRemaining };
   } catch (err) {
     console.warn("⚠️ 抓取活動狀態失敗，改用預設發噗文字：", err.message);
     return null;
@@ -111,11 +111,12 @@ function buildPlurkContent(eventStatus) {
     return `${hashtags}\n本場活動排行預測（自動發送）`;
   }
 
+  const periodText = eventStatus.id ? `第${eventStatus.id}期　` : "";
   const remainText = eventStatus.hoursRemaining !== null && eventStatus.hoursRemaining > 0
     ? `，距結算約 ${Math.round(eventStatus.hoursRemaining * 10) / 10} 小時`
     : "";
 
-  return `${hashtags}\n【${eventStatus.name}】排行預測${remainText}`;
+  return `${hashtags}\n${periodText}【${eventStatus.name}】排行預測${remainText}`;
 }
 
 function getOAuthClient() {

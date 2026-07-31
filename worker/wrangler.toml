@@ -1,0 +1,22 @@
+name = "pjsekai-plurk-bot"
+main = "src/worker.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 兩組排程：
+# "* * * * *"       每 1 分鐘一次，跑留言查詢邏輯
+# "0 0-16 * * *"     每天 UTC 0:00~16:00 整點一次（=台灣時間 08:00~24:00），
+#                    去觸發 GitHub 的 post-prediction.yml workflow_dispatch，
+#                    取代不可靠的 GitHub schedule 觸發
+[triggers]
+crons = ["* * * * *", "0 0-16 * * *"]
+
+# 不是機密的設定值可以直接寫在這裡；
+# PLURK_APP_KEY / PLURK_APP_SECRET / PLURK_ACCESS_TOKEN / PLURK_ACCESS_SECRET /
+# APPS_SCRIPT_BASE_URL / GITHUB_TOKEN
+# 這六個要用 `wrangler secret put` 指令另外設定，不要寫在這個檔案裡
+[vars]
+GITHUB_TRIGGER_CRON = "0 0-16 * * *" # 要跟上面 crons 裡負責觸發GitHub那組字串完全一致，worker.js 用這個判斷是哪組排程觸發的
+GITHUB_OWNER = "xianxianjiazhu"
+GITHUB_REPO = "pjsekaibot"
+GITHUB_WORKFLOW_FILE = "post-prediction.yml"

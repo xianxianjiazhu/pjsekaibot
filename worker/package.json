@@ -1,0 +1,16 @@
+{
+  "name": "pjsekai-plurk-bot-worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.90.0"
+  },
+  "dependencies": {
+    "oauth-1.0a": "^2.2.6"
+  }
+}

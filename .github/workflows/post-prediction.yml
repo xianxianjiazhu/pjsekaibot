@@ -20,22 +20,21 @@ jobs:
     outputs:
       in_range: ${{ steps.check.outputs.in_range }}
     steps:
-      - name: 向 Apps Script 查詢目前活動的 start_at / aggregate_at，判斷現在該不該發文
+      - name: 向 Apps Script 查詢活動狀態+最近發文紀錄，判斷現在該不該發文
         id: check
         env:
-          STATUS_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=proxy&target=top100"
+          STATUS_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=checkPostStatus"
         run: |
-          RESPONSE=$(curl -sL --max-time 30 "$STATUS_URL")
-          CURL_EXIT=$?
-          if [[ $CURL_EXIT -ne 0 ]]; then
-            echo "curl 逾時或失敗（exit code $CURL_EXIT），可能是 Apps Script 或 HiSekai API 沒回應，這次跳過"
+          RESPONSE=$(curl -sL --max-time 30 "$STATUS_URL") || {
+            echo "curl 逾時或失敗，可能是 Apps Script 或 HiSekai API 沒回應，這次跳過"
             echo "in_range=false" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
+          }
           echo "回傳內容（節錄）：$(echo "$RESPONSE" | head -c 300)"
 
           START_AT=$(echo "$RESPONSE" | jq -r '.start_at // empty')
           AGGREGATE_AT=$(echo "$RESPONSE" | jq -r '.aggregate_at // empty')
+          LAST_POSTED_AT=$(echo "$RESPONSE" | jq -r '.lastPostedAt // empty')
 
           if [[ -z "$START_AT" || -z "$AGGREGATE_AT" ]]; then
             echo "抓不到 start_at / aggregate_at（可能活動資料異常或 API 暫時失敗），這次先跳過，不發文"
@@ -62,6 +61,23 @@ jobs:
           fi
           echo "現在台灣時間：$TW_TIME_STR，是否在發文時段(08:00~24:00)內：$IN_ACTIVE_HOURS"
 
+          # 判斷「這個台灣時間的整點時段」是不是已經發過文了，而不是單純看「距離上次發文多久」。
+          # 這樣如果之前哪次自動發文失敗、事後手動補發，不會連帶影響到「下一個」整點該發的文
+          # （例如 11:08 手動補發，12:00 那次判斷的是「12點這個時段有沒有發過」，兩者不衝突）。
+          NOW_TW_SLOT=$(TZ="Asia/Taipei" date -d "@$NOW_EPOCH" "+%Y-%m-%d %H")
+          if [[ -n "$LAST_POSTED_AT" ]]; then
+            LAST_POSTED_EPOCH=$(date -u -d "$LAST_POSTED_AT" +%s)
+            LAST_POSTED_TW_SLOT=$(TZ="Asia/Taipei" date -d "@$LAST_POSTED_EPOCH" "+%Y-%m-%d %H")
+          else
+            LAST_POSTED_TW_SLOT=""
+          fi
+          echo "目前時段：$NOW_TW_SLOT 點，最近一次發文時段：${LAST_POSTED_TW_SLOT:-（無紀錄）}"
+
+          ALREADY_POSTED_THIS_SLOT=false
+          if [[ -n "$LAST_POSTED_TW_SLOT" && "$NOW_TW_SLOT" == "$LAST_POSTED_TW_SLOT" ]]; then
+            ALREADY_POSTED_THIS_SLOT=true
+          fi
+
           echo "現在（UTC）：$(date -u -d "@$NOW_EPOCH")"
           echo "活動開始：$(date -u -d "@$START_EPOCH")，預測截止（結算時間）：$(date -u -d "@$AGGREGATE_EPOCH")"
           echo "開始發文門檻（活動開始+3小時）：$(date -u -d "@$MIN_START_EPOCH")"
@@ -70,20 +86,11 @@ jobs:
             echo "現在不在台灣時間 08:00~24:00 的發文時段內，跳過這次發文"
             echo "in_range=false" >> "$GITHUB_OUTPUT"
           elif [[ "$NOW_EPOCH" -ge "$MIN_START_EPOCH" && "$NOW_EPOCH" -lt "$AGGREGATE_EPOCH" ]]; then
-            echo "在活動預測期間內（已過開場3小時緩衝），檢查最近有沒有剛發過文..."
-
-            # 因為 GitHub 自己的 schedule 跟 Cloudflare 準時觸發可能疊在一起，
-            # 這裡查「最近55分鐘內」有沒有已經發過文，避免重複發文
-            # （留5分鐘餘裕給下一輪整點，不會卡到下次該發的時機）
-            RECENT_URL="https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=trackedPlurks&hours=0.92"
-            RECENT_RESPONSE=$(curl -sL --max-time 30 "$RECENT_URL")
-            RECENT_COUNT=$(echo "$RECENT_RESPONSE" | jq -r '.plurkIds | length // 0' 2>/dev/null || echo "0")
-
-            if [[ "$RECENT_COUNT" -gt 0 ]]; then
-              echo "最近55分鐘內已經發過文了（$RECENT_COUNT 則），這次跳過避免重複發文"
+            if [[ "$ALREADY_POSTED_THIS_SLOT" == "true" ]]; then
+              echo "這個小時時段已經發過文了，這次跳過避免重複發文"
               echo "in_range=false" >> "$GITHUB_OUTPUT"
             else
-              echo "最近55分鐘內沒發過文，繼續發文"
+              echo "在活動預測期間內（已過開場3小時緩衝）且這個時段還沒發過文，繼續發文"
               echo "in_range=true" >> "$GITHUB_OUTPUT"
             fi
           elif [[ "$NOW_EPOCH" -ge "$START_EPOCH" && "$NOW_EPOCH" -lt "$MIN_START_EPOCH" ]]; then
@@ -119,6 +126,8 @@ jobs:
           PLURK_APP_SECRET: ${{ secrets.PLURK_APP_SECRET }}
           PLURK_ACCESS_TOKEN: ${{ secrets.PLURK_ACCESS_TOKEN }}
           PLURK_ACCESS_SECRET: ${{ secrets.PLURK_ACCESS_SECRET }}
+          PLURK_IMAGE_ACCESS_TOKEN: ${{ secrets.PLURK_IMAGE_ACCESS_TOKEN }}
+          PLURK_IMAGE_ACCESS_SECRET: ${{ secrets.PLURK_IMAGE_ACCESS_SECRET }}
           TARGET_URL: "https://xianxianjiazhu.github.io/pjsekai/score_predict.html"
           SHARE_BUTTON_SELECTOR: "#shareImageBtn"
           APPS_SCRIPT_BASE_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec"

@@ -27,6 +27,8 @@ const {
   PLURK_APP_SECRET,
   PLURK_ACCESS_TOKEN,
   PLURK_ACCESS_SECRET,
+  PLURK_IMAGE_ACCESS_TOKEN = "",
+  PLURK_IMAGE_ACCESS_SECRET = "",
   TARGET_URL = "https://xianxianjiazhu.github.io/pjsekai/score_predict.html",
   SHARE_BUTTON_SELECTOR = "#shareImageBtn",
   PLURK_QUALIFIER = "shares",
@@ -230,9 +232,8 @@ function getOAuthClient() {
   });
 }
 
-async function uploadPicture(imageBuffer) {
+async function uploadPicture(imageBuffer, token) {
   const oauth = getOAuthClient();
-  const token = { key: PLURK_ACCESS_TOKEN, secret: PLURK_ACCESS_SECRET };
   const url = "https://www.plurk.com/APP/Timeline/uploadPicture";
 
   const authHeader = oauth.toHeader(oauth.authorize({ url, method: "POST" }, token));
@@ -259,12 +260,32 @@ async function uploadPicture(imageBuffer) {
   return imageUrl;
 }
 
+// 優先用「高畫質帳號」（有噗幣、上傳不壓縮）上傳，失敗的話（例如噗幣剛好到期）
+// 自動退回用機器人帳號上傳（可能會被壓縮，但至少發得出去，不會整次跳過不發文）
+async function uploadPictureWithFallback(imageBuffer) {
+  const hasImageAccount = PLURK_IMAGE_ACCESS_TOKEN && PLURK_IMAGE_ACCESS_SECRET;
+
+  if (hasImageAccount) {
+    try {
+      const imageToken = { key: PLURK_IMAGE_ACCESS_TOKEN, secret: PLURK_IMAGE_ACCESS_SECRET };
+      const imageUrl = await uploadPicture(imageBuffer, imageToken);
+      console.log("✅ 已用高畫質帳號上傳圖片（不壓縮）");
+      return imageUrl;
+    } catch (err) {
+      console.warn(`⚠️ 用高畫質帳號上傳圖片失敗，改用機器人帳號上傳（畫質可能被壓縮）：${err.message}`);
+    }
+  }
+
+  const botToken = { key: PLURK_ACCESS_TOKEN, secret: PLURK_ACCESS_SECRET };
+  return uploadPicture(imageBuffer, botToken);
+}
+
 async function postToPlurk(imageBuffer, content) {
   const oauth = getOAuthClient();
   const token = { key: PLURK_ACCESS_TOKEN, secret: PLURK_ACCESS_SECRET };
 
   console.log("正在上傳圖片...");
-  const imageUrl = await uploadPicture(imageBuffer);
+  const imageUrl = await uploadPictureWithFallback(imageBuffer);
   console.log("圖片網址：", imageUrl);
 
   const url = "https://www.plurk.com/APP/Timeline/plurkAdd";

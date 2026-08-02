@@ -25,7 +25,7 @@ jobs:
         env:
           STATUS_URL: "https://script.google.com/macros/s/AKfycbxyJhVqGpCAQ5upZlflj6FopumGh14gjzHXBTO1nXATHUdGWD1JUNMPMQQ8_ND7CXZffQ/exec?mode=checkPostStatus"
         run: |
-          RESPONSE=$(curl -sL --max-time 30 "$STATUS_URL") || {
+          RESPONSE=$(curl -sL --max-time 45 "$STATUS_URL") || {
             echo "curl 逾時或失敗，可能是 Apps Script 或 HiSekai API 沒回應，這次跳過"
             echo "in_range=false" >> "$GITHUB_OUTPUT"
             exit 0

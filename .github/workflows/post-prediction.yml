@@ -32,6 +32,15 @@ jobs:
           }
           echo "回傳內容（節錄）：$(echo "$RESPONSE" | head -c 300)"
 
+          # 先驗證回傳的到底是不是合法 JSON（例如 Apps Script 那邊偶爾會回傳 Google 的
+          # 通用錯誤頁 HTML，不是我們預期的 JSON），不是的話優雅跳過，
+          # 不要讓後面 jq 解析失敗的退出碼把整個腳本中斷掉
+          if ! echo "$RESPONSE" | jq empty 2>/dev/null; then
+            echo "回傳內容不是合法的 JSON（可能是 Apps Script 暫時性異常），這次跳過"
+            echo "in_range=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           START_AT=$(echo "$RESPONSE" | jq -r '.start_at // empty')
           AGGREGATE_AT=$(echo "$RESPONSE" | jq -r '.aggregate_at // empty')
           LAST_POSTED_AT=$(echo "$RESPONSE" | jq -r '.lastPostedAt // empty')
